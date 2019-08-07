@@ -12,9 +12,9 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""Exceptions related to the IBM Q Api."""
+"""Exceptions related to the IBM Q Experience API."""
 
-from qiskit.providers.ibmq.api import ApiError as ApiErrorV1
+from ..api import ApiError as ApiErrorV1
 
 
 class ApiError(ApiErrorV1):

@@ -12,23 +12,32 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""Utilities for IBM Q API connector."""
+"""Client for websocket communication with the IBM Q Experience API."""
 
 import asyncio
 import json
 import logging
 import time
 from concurrent import futures
+import warnings
 
+import nest_asyncio
 from websockets import connect, ConnectionClosed
 
 from qiskit.providers.ibmq.apiconstants import ApiJobStatus, API_JOB_FINAL_STATES
-from .exceptions import (WebsocketError, WebsocketTimeoutError,
-                         WebsocketIBMQProtocolError,
-                         WebsocketAuthenticationError)
+from ..exceptions import (WebsocketError, WebsocketTimeoutError,
+                          WebsocketIBMQProtocolError,
+                          WebsocketAuthenticationError)
+
+from .base import BaseClient
 
 
 logger = logging.getLogger(__name__)
+
+# `asyncio` by design does not allow event loops to be nested. Jupyter (really
+# tornado) has its own event loop already so we need to patch it.
+# Patch asyncio to allow nested use of `loop.run_until_complete()`.
+nest_asyncio.apply()
 
 
 class WebsocketMessage:
@@ -60,12 +69,12 @@ class WebsocketMessage:
         return cls(parsed_dict['type'], parsed_dict.get('data', None))
 
 
-class WebsocketClient:
-    """Client for websocket communication with the IBMQ API.
+class WebsocketClient(BaseClient):
+    """Client for websocket communication with the IBM Q Experience API.
 
     Attributes:
         websocket_url (str): URL for websocket communication with IBM Q.
-        access_token (str): access token for IBMQ.
+        access_token (str): access token for IBM Q.
     """
 
     def __init__(self, websocket_url, access_token):
@@ -89,18 +98,26 @@ class WebsocketClient:
         """
         try:
             logger.debug('Starting new websocket connection: %s', url)
-            websocket = yield from connect(url)
+            with warnings.catch_warnings():
+                # Suppress websockets deprecation warnings until the fix is available
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
+                websocket = yield from connect(url)
 
-        except ConnectionError as ex:
+        # pylint: disable=broad-except
+        except Exception as ex:
             raise WebsocketError('Could not connect to server') from ex
 
         try:
             # Authenticate against the server.
             auth_request = self._authentication_message()
-            yield from websocket.send(auth_request.as_json())
+            with warnings.catch_warnings():
+                # Suppress websockets deprecation warnings until the fix is available
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
+                yield from websocket.send(auth_request.as_json())
 
-            # Verify that the server acknowledged our authentication.
-            auth_response_raw = yield from websocket.recv()
+                # Verify that the server acknowledged our authentication.
+                auth_response_raw = yield from websocket.recv()
+
             auth_response = WebsocketMessage.from_bytes(auth_response_raw)
 
             if auth_response.type_ != 'authenticated':
@@ -144,15 +161,18 @@ class WebsocketClient:
             # a timeout has been reached.
             while True:
                 try:
-                    if timeout:
-                        response_raw = yield from asyncio.wait_for(
-                            websocket.recv(), timeout=timeout)
+                    with warnings.catch_warnings():
+                        # Suppress websockets deprecation warnings until the fix is available
+                        warnings.filterwarnings("ignore", category=DeprecationWarning)
+                        if timeout:
+                            response_raw = yield from asyncio.wait_for(
+                                websocket.recv(), timeout=timeout)
 
-                        # Decrease the timeout, with a 5-second grace period.
-                        elapsed_time = time.time() - start_time
-                        timeout = max(5, int(original_timeout - elapsed_time))
-                    else:
-                        response_raw = yield from websocket.recv()
+                            # Decrease the timeout, with a 5-second grace period.
+                            elapsed_time = time.time() - start_time
+                            timeout = max(5, int(original_timeout - elapsed_time))
+                        else:
+                            response_raw = yield from websocket.recv()
                     logger.debug('Received message from websocket: %s',
                                  response_raw)
 
@@ -162,35 +182,34 @@ class WebsocketClient:
                     job_status = response.data.get('status')
                     if (job_status and
                             ApiJobStatus(job_status) in API_JOB_FINAL_STATES):
-                        # Force closing the connection.
-                        # TODO: revise with API team the automatic closing.
-                        raise ConnectionClosed(
-                            code=4002,
-                            reason='IBMQProvider closed the connection')
+                        break
 
                 except futures.TimeoutError:
                     # Timeout during our wait.
                     raise WebsocketTimeoutError('Timeout reached') from None
                 except ConnectionClosed as ex:
                     # From the API:
-                    # 4001: closed due to an internal erros
+                    # 4001: closed due to an internal errors
                     # 4002: closed on purpose (no more updates to send)
                     # 4003: closed due to job not found.
                     message = 'Unexpected error'
                     if ex.code == 4001:
                         message = 'Internal server error'
-                    if ex.code == 4002:
+                    elif ex.code == 4002:
                         break
                     elif ex.code == 4003:
                         message = 'Job id not found'
                     raise WebsocketError('Connection with websocket closed '
                                          'unexpectedly: {}'.format(message)) from ex
         finally:
-            yield from websocket.close()
+            with warnings.catch_warnings():
+                # Suppress websockets deprecation warnings until the fix is available
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
+                yield from websocket.close()
 
         return last_status
 
     def _authentication_message(self):
-        """Return the message used for authenticating agains the server."""
+        """Return the message used for authenticating against the server."""
         return WebsocketMessage(type_='authentication',
                                 data=self.access_token)

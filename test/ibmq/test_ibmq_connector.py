@@ -20,11 +20,12 @@ from qiskit.circuit import ClassicalRegister, QuantumCircuit, QuantumRegister
 from qiskit.compiler import assemble, transpile
 from qiskit.providers.ibmq import IBMQ
 from qiskit.providers.ibmq.api import (ApiError, BadBackendError, IBMQConnector)
-from qiskit.test import QiskitTestCase, requires_qe_access
-from ..decorators import requires_classic_api
+
+from ..ibmqtestcase import IBMQTestCase
+from ..decorators import requires_classic_api, requires_qe_access
 
 
-class TestIBMQConnector(QiskitTestCase):
+class TestIBMQConnector(IBMQTestCase):
     """Tests for IBMQConnector."""
 
     def setUp(self):
@@ -71,7 +72,7 @@ class TestIBMQConnector(QiskitTestCase):
                         backend=backend, shots=1)
 
         api = backend._api
-        job = api.submit_job(qobj.as_dict(), backend_name)
+        job = api.submit_job(qobj.to_dict(), backend_name)
         check_status = None
         if 'status' in job:
             check_status = job['status']
@@ -89,7 +90,7 @@ class TestIBMQConnector(QiskitTestCase):
                         backend=backend, shots=1)
 
         api = backend._api
-        self.assertRaises(BadBackendError, api.submit_job, qobj.as_dict(),
+        self.assertRaises(BadBackendError, api.submit_job, qobj.to_dict(),
                           'INVALID_BACKEND_NAME')
 
     @requires_qe_access
@@ -145,28 +146,8 @@ class TestIBMQConnector(QiskitTestCase):
         version = api.api_version()
         self.assertIn('new_api', version)
 
-    @requires_qe_access
-    @requires_classic_api
-    def test_get_job_includes(self, qe_token, qe_url):
-        """Check the field includes parameter for get_job."""
-        IBMQ.enable_account(qe_token, qe_url)
 
-        backend_name = 'ibmq_qasm_simulator'
-        backend = IBMQ.get_backend(backend_name)
-        qobj = assemble(transpile([self.qc1, self.qc2], backend=backend, seed_transpiler=self.seed),
-                        backend=backend, shots=1)
-
-        api = backend._api
-        job = api.submit_job(qobj.as_dict(), backend_name)
-        job_id = job['id']
-
-        # Get the job, excluding a parameter.
-        self.assertIn('deleted', job)
-        job_excluded = api.get_job(job_id, exclude_fields=['deleted'])
-        self.assertNotIn('deleted', job_excluded)
-
-
-class TestAuthentication(QiskitTestCase):
+class TestAuthentication(IBMQTestCase):
     """Tests for the authentication features.
 
     These tests are in a separate TestCase as they need to control the

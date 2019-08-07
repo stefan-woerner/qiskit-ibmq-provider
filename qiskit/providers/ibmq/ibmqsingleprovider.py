@@ -24,8 +24,6 @@ from qiskit.providers.providerutils import filter_backends
 from qiskit.validation.exceptions import ModelValidationError
 
 from .api import IBMQConnector
-from .api_v2 import IBMQClient
-from .api_v2.exceptions import AuthenticationLicenseError
 from .ibmqbackend import IBMQBackend, IBMQSimulator
 
 
@@ -50,7 +48,6 @@ class IBMQSingleProvider(BaseProvider):
 
         # Get a connection to IBMQ.
         self.credentials = credentials
-        self.is_new_api = False
         self._api = self._authenticate(self.credentials)
         self._ibm_provider = ibmq_provider
 
@@ -66,7 +63,8 @@ class IBMQSingleProvider(BaseProvider):
 
         return filter_backends(backends, filters=filters, **kwargs)
 
-    def _authenticate(self, credentials):
+    @classmethod
+    def _authenticate(cls, credentials):
         """Authenticate against the IBMQ API.
 
         Args:
@@ -77,41 +75,20 @@ class IBMQSingleProvider(BaseProvider):
         Raises:
             ConnectionError: if the authentication resulted in error.
         """
-        # Use a temporary IBMQConnector for determining API version.
-        # TODO: replace with a IBMQClient or a Session directly after support
-        # for proxies is tested for RetrySession.
-        # Prepare the config_dict for IBMQConnector.
-        config_dict = {
-            'url': credentials.url,
-        }
-        if credentials.proxies:
-            config_dict['proxies'] = credentials.proxies
-        if credentials.websocket_url:
-            config_dict['websocket_url'] = credentials.websocket_url
-
-        # Prepare the version_config for the version detector.
-        version_config = config_dict.copy()
-        # By passing "access_token" in the dict, we bypass the login.
-        version_config['access_token'] = 'version_check'
-        version_connector = IBMQConnector(None, version_config,
-                                          credentials.verify)
-
-        # Check if the URL belongs to auth services of the new API.
         try:
-            version_info = version_connector.api_version()
-            self.is_new_api = version_info['new_api']
-
-            if version_info['new_api'] and 'api-auth' in version_info:
-                return IBMQClient(api_token=credentials.token,
-                                  auth_url=credentials.url)
-            else:
-                return IBMQConnector(credentials.token, config_dict,
-                                     credentials.verify)
-        except AuthenticationLicenseError as ex:
-            raise ConnectionError("Couldn't connect to IBMQ server: {0}"
-                                  .format(ex)) from None
+            config_dict = {
+                'url': credentials.url,
+            }
+            if credentials.proxies:
+                config_dict['proxies'] = credentials.proxies
+            return IBMQConnector(credentials.token, config_dict,
+                                 credentials.verify)
         except Exception as ex:
             root_exception = ex
+            if 'License required' in str(ex):
+                # For the 401 License required exception from the API, be
+                # less verbose with the exceptions.
+                root_exception = None
             raise ConnectionError("Couldn't connect to IBMQ server: {0}"
                                   .format(ex)) from root_exception
 
@@ -126,6 +103,12 @@ class IBMQSingleProvider(BaseProvider):
         configs_list = self._api.available_backends()
         for raw_config in configs_list:
             try:
+                # Make sure the raw_config is of proper type
+                if not isinstance(raw_config, dict):
+                    logger.warning("An error occurred when retrieving backend "
+                                   "information. Some backends might not be available.")
+                    continue
+
                 if raw_config.get('open_pulse', False):
                     config = PulseBackendConfiguration.from_dict(raw_config)
                 else:

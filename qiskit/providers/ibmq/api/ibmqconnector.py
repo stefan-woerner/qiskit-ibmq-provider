@@ -18,7 +18,7 @@ import json
 import logging
 import re
 
-from qiskit.providers.ibmq.apiconstants import ApiJobStatus
+from ..apiconstants import ApiJobStatus
 from .exceptions import CredentialsError, BadBackendError
 from .utils import Request
 
@@ -184,11 +184,10 @@ class IBMQConnector:
         if 'calibration' in job:
             job['properties'] = job.pop('calibration')
 
-        if 'qObjectResult' in job:
-            # If the job is using Qobj, return the qObjectResult directly,
-            # which should contain a valid Result.
-            return job
-        elif 'qasms' in job:
+        # The "kind" field indicates the type of the job (empty for qasm jobs)
+        job_type = job.get('kind', '')
+
+        if (not job_type) and ('qasms' in job):
             # Fallback for pre-Qobj jobs.
             for qasm in job['qasms']:
                 if ('result' in qasm) and ('data' in qasm['result']):

@@ -12,7 +12,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""Root REST adapter for the IBM Q Api version 2."""
+"""Root REST adapter for the IBM Q Experience v2 API."""
 
 import json
 
@@ -25,11 +25,11 @@ class Api(RestAdapterBase):
     """Rest adapter for general endpoints."""
 
     URL_MAP = {
-        'backends': '/Backends/v/1',
+        'backends': '/devices/v/1',
         'hubs': '/Network',
         'jobs': '/Jobs',
         'jobs_status': '/Jobs/status',
-        'circuit': '/QCircuitApiModels',
+        'circuit': '/qcircuit',
         'version': '/version'
     }
 
@@ -150,6 +150,6 @@ class Api(RestAdapterBase):
         return self.session.post(url, json=payload).json()
 
     def version(self):
-        """Return the api versions."""
+        """Return the API versions."""
         url = self.get_url('version')
         return self.session.get(url).json()

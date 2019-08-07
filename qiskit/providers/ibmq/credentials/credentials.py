@@ -16,13 +16,19 @@
 
 import re
 
+from requests_ntlm import HttpNtlmAuth
+
+from .hubgroupproject import HubGroupProject
+
+
 # Regex that matches a IBMQ URL with hub information
 REGEX_IBMQ_HUBS = (
     '(?P<prefix>http[s]://.+/api)'
     '/Hubs/(?P<hub>[^/]+)/Groups/(?P<group>[^/]+)/Projects/(?P<project>[^/]+)'
 )
+
 # Template for creating an IBMQ URL with hub information
-TEMPLATE_IBMQ_HUBS = '{prefix}/Hubs/{hub}/Groups/{group}/Projects/{project}'
+TEMPLATE_IBMQ_HUBS = '{prefix}/Network/{hub}/Groups/{group}/Projects/{project}'
 
 
 class Credentials:
@@ -33,17 +39,18 @@ class Credentials:
     The `unique_id()` returns the unique identifier.
     """
 
-    def __init__(self, token, url, hub=None, group=None, project=None,
-                 websocket_url=None, proxies=None, verify=True):
+    def __init__(self, token, url, websockets_url=None,
+                 hub=None, group=None, project=None,
+                 proxies=None, verify=True):
         """Return new set of credentials.
 
         Args:
             token (str): Quantum Experience or IBMQ API token.
             url (str): URL for Quantum Experience or IBMQ.
+            websockets_url (str): URL for websocket server.
             hub (str): the hub used for IBMQ.
             group (str): the group used for IBMQ.
             project (str): the project used for IBMQ.
-            websocket_url (str): URL for websocket communication with IBM Q.
             proxies (dict): proxy configuration for the API.
             verify (bool): if False, ignores SSL certificates errors
 
@@ -55,9 +62,10 @@ class Credentials:
             communicating with the API.
         """
         self.token = token
-        (self.url, self.websocket_url,
+        (self.url, self.base_url,
          self.hub, self.group, self.project) = _unify_ibmq_url(
-             url, websocket_url, hub, group, project)
+             url, hub, group, project)
+        self.websockets_url = websockets_url
         self.proxies = proxies or {}
         self.verify = verify
 
@@ -72,32 +80,60 @@ class Credentials:
         """Return a value that uniquely identifies these credentials.
 
         By convention, we assume (hub, group, project) is always unique.
+
+        Returns:
+            HubGroupProject: the (hub, group, project) tuple.
         """
-        return self.hub, self.group, self.project
+        return HubGroupProject(self.hub, self.group, self.project)
+
+    def connection_parameters(self):
+        """Return a dict of kwargs in the format expected by `requests`.
+
+        Returns:
+            dict: a dict with connection-related arguments in the format
+                expected by `requests`. The following keys can be present:
+                `proxies`, `verify`, `auth`.
+        """
+        request_kwargs = {
+            'verify': self.verify
+        }
+
+        if self.proxies:
+            if 'urls' in self.proxies:
+                request_kwargs['proxies'] = self.proxies['urls']
+
+            if 'username_ntlm' in self.proxies and 'password_ntlm' in self.proxies:
+                request_kwargs['auth'] = HttpNtlmAuth(
+                    self.proxies['username_ntlm'],
+                    self.proxies['password_ntlm']
+                )
+
+        return request_kwargs
 
 
-def _unify_ibmq_url(url, websocket_url=None, hub=None, group=None, project=None):
+def _unify_ibmq_url(url, hub=None, group=None, project=None):
     """Return a new-style set of credential values (url and hub parameters).
 
     Args:
         url (str): URL for Quantum Experience or IBM Q.
-        websocket_url (str): URL for websocket communication with IBM Q.
         hub (str): the hub used for IBM Q.
         group (str): the group used for IBM Q.
         project (str): the project used for IBM Q.
 
     Returns:
-        tuple[url, websocket_url, hub, group, token]:
+        tuple[url, base_url, hub, group, token]:
             * url (str): new-style Quantum Experience or IBM Q URL (the hub,
-                group and project included in the URL.
+                group and project included in the URL).
+            * base_url (str): base URL for the API, without hub/group/project.
             * hub (str): the hub used for IBM Q.
             * group (str): the group used for IBM Q.
             * project (str): the project used for IBM Q.
     """
     # Check if the URL is "new style", and retrieve embedded parameters from it.
     regex_match = re.match(REGEX_IBMQ_HUBS, url, re.IGNORECASE)
+    base_url = url
     if regex_match:
-        _, hub, group, project = regex_match.groups()
+        base_url, hub, group, project = regex_match.groups()
     else:
         if hub and group and project:
             # Assume it is an IBMQ URL, and update the url.
@@ -107,4 +143,4 @@ def _unify_ibmq_url(url, websocket_url=None, hub=None, group=None, project=None)
             # Cleanup the hub, group and project, without modifying the url.
             hub = group = project = None
 
-    return url, websocket_url, hub, group, project
+    return url, base_url, hub, group, project

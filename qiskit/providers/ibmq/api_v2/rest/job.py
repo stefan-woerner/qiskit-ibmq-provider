@@ -12,7 +12,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""Job REST adapter for the IBM Q Api version 2."""
+"""Job REST adapter for the IBM Q Experience v2 API."""
 
 import json
 
@@ -24,7 +24,7 @@ class Job(RestAdapterBase):
 
     URL_MAP = {
         'callback_upload': '/jobDataUploaded',
-        'cancel': 'cancel',
+        'cancel': '/cancel',
         'download_url': '/jobDownloadUrl',
         'self': '',
         'status': '/status',

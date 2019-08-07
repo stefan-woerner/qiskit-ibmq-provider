@@ -12,21 +12,23 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""Session customized for IBM Q access."""
+"""Session customized for IBM Q Experience access."""
 
+import os
 from requests import Session, RequestException
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .exceptions import RequestsApiError
+from ..version import __version__ as ibmq_provider_version
 
 STATUS_FORCELIST = (
-    500,  # Internal Server Error
     502,  # Bad Gateway
     503,  # Service Unavailable
     504,  # Gateway Timeout
 )
-CLIENT_APPLICATION = 'qiskit-api-py'
+CLIENT_APPLICATION = 'ibmqprovider/' + ibmq_provider_version
+CUSTOM_HEADER_ENV_VAR = 'QE_CUSTOM_CLIENT_APP_HEADER'
 
 
 class RetrySession(Session):
@@ -59,6 +61,10 @@ class RetrySession(Session):
 
         self._initialize_retry(retries, backoff_factor)
         self._initialize_session_parameters(verify, proxies or {}, auth)
+
+    def __del__(self):
+        """RetrySession destructor. Closes the session."""
+        self.close()
 
     @property
     def access_token(self):
@@ -99,7 +105,14 @@ class RetrySession(Session):
             proxies (dict): proxy URLs mapped by protocol.
             auth (AuthBase): authentication handler.
         """
-        self.headers.update({'X-Qx-Client-Application': CLIENT_APPLICATION})
+        client_app_header = CLIENT_APPLICATION
+
+        # Append custom header to the end if specified
+        custom_header = os.getenv(CUSTOM_HEADER_ENV_VAR)
+        if custom_header:
+            client_app_header += "/" + custom_header
+
+        self.headers.update({'X-Qx-Client-Application': client_app_header})
 
         self.auth = auth
         self.proxies = proxies or {}
@@ -138,6 +151,15 @@ class RetrySession(Session):
             # Wrap the requests exceptions into a IBM Q custom one, for
             # compatibility.
             message = str(ex)
+            if ex.response is not None:
+                try:
+                    error_json = ex.response.json()['error']
+                    message += ". {}, Error code: {}.".format(
+                        error_json['message'], error_json['code'])
+                except (ValueError, KeyError):
+                    # the response did not contain the expected json.
+                    pass
+
             if self.access_token:
                 message = message.replace(self.access_token, '...')
 

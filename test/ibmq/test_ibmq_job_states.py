@@ -25,6 +25,7 @@ from qiskit.providers import JobError, JobTimeoutError
 from qiskit.providers.ibmq.api import ApiError
 from qiskit.providers.ibmq.job.ibmqjob import IBMQJob
 from qiskit.providers.jobstatus import JobStatus
+
 from ..jobtestcase import JobTestCase
 
 
@@ -290,12 +291,6 @@ class TestIBMQJobStates(JobTestCase):
         self.wait_for_initialization(job)
         with self.assertRaises(JobTimeoutError):
             job.result(timeout=0.2)
-
-    def test_cancel_while_initializing_fails(self):
-        job = self.run_with_api(CancellableAPI())
-        can_cancel = job.cancel()
-        self.assertFalse(can_cancel)
-        self.assertEqual(job.status(), JobStatus.INITIALIZING)
 
     def test_only_final_states_cause_detailed_request(self):
         from unittest import mock

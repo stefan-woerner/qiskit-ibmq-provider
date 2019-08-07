@@ -20,14 +20,15 @@ import warnings
 from marshmallow import ValidationError
 
 from qiskit.providers import BaseBackend, JobStatus
-from qiskit.providers.ibmq.utils import update_qobj_config
 from qiskit.providers.models import (BackendStatus, BackendProperties,
                                      PulseDefaults)
 
 from .api import ApiError
+from .api_v2.clients import BaseClient
 from .apiconstants import ApiJobStatus, ApiJobKind
 from .exceptions import IBMQBackendError, IBMQBackendValueError
 from .job import IBMQJob
+from .utils import update_qobj_config
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,10 @@ class IBMQBackend(BaseBackend):
         self.group = credentials.group
         self.project = credentials.project
 
+        # Attributes used by caching functions.
+        self._properties = None
+        self._defaults = None
+
     def run(self, qobj):
         """Run a Qobj asynchronously.
 
@@ -62,21 +67,50 @@ class IBMQBackend(BaseBackend):
         Returns:
             IBMQJob: an instance derived from BaseJob
         """
-        job = IBMQJob(self, None, self._api, qobj=qobj)
+        kwargs = {}
+        if isinstance(self._api, BaseClient):
+            # Default to using object storage and websockets for new API.
+            kwargs = {'use_object_storage': True,
+                      'use_websockets': True}
+
+        job = IBMQJob(self, None, self._api, qobj=qobj, **kwargs)
         job.submit()
+
         return job
 
-    def properties(self):
-        """Return the online backend properties.
+    def properties(self, refresh=False, datetime=None):
+        """Return the online backend properties with optional filtering.
 
-        The return is via QX API call.
+        Args:
+            refresh (bool): if True, the return is via a QX API call.
+                Otherwise, a cached version is returned.
+            datetime (datetime.datetime): by specifying a datetime,
+                this function returns an instance of the BackendProperties whose
+                timestamp is closest to, but older than, the specified datetime.
 
         Returns:
-            BackendProperties: The properties of the backend.
+            BackendProperties: The properties of the backend. If the backend has
+                no properties to display, it returns ``None``.
         """
-        api_properties = self._api.backend_properties(self.name())
+        # pylint: disable=arguments-differ
+        if datetime:
+            if not isinstance(self._api, BaseClient):
+                warnings.warn('Retrieving the properties of a '
+                              'backend in a specific datetime is '
+                              'only available when using IBM Q v2')
+                return None
 
-        return BackendProperties.from_dict(api_properties)
+            # Do not use cache for specific datetime properties.
+            api_properties = self._api.backend_properties(self.name(), datetime=datetime)
+            if not api_properties:
+                return None
+            return BackendProperties.from_dict(api_properties)
+
+        if refresh or self._properties is None:
+            api_properties = self._api.backend_properties(self.name())
+            self._properties = BackendProperties.from_dict(api_properties)
+
+        return self._properties
 
     def status(self):
         """Return the online backend status.
@@ -96,31 +130,45 @@ class IBMQBackend(BaseBackend):
             raise LookupError(
                 "Couldn't get backend status: {0}".format(ex))
 
-    def defaults(self):
+    def defaults(self, refresh=False):
         """Return the pulse defaults for the backend.
 
+        Args:
+            refresh (bool): if True, the return is via a QX API call.
+                Otherwise, a cached version is returned.
+
         Returns:
-            PulseDefaults: the pulse defaults for the backend. IF the backend
-            does not support defaults, it returns ``None``.
+            PulseDefaults: the pulse defaults for the backend. If the backend
+                does not support defaults, it returns ``None``.
         """
-        backend_defaults = self._api.backend_defaults(self.name())
+        if not self.configuration().open_pulse:
+            return None
 
-        if backend_defaults:
-            return PulseDefaults.from_dict(backend_defaults)
+        if refresh or self._defaults is None:
+            api_defaults = self._api.backend_defaults(self.name())
+            if api_defaults:
+                self._defaults = PulseDefaults.from_dict(api_defaults)
+            else:
+                self._defaults = None
 
-        return None
+        return self._defaults
 
-    def jobs(self, limit=50, skip=0, status=None, db_filter=None):
+    def jobs(self, limit=10, skip=0, status=None, db_filter=None):
         """Return the jobs submitted to this backend.
 
         Return the jobs submitted to this backend, with optional filtering and
-        pagination. Note that jobs submitted with earlier versions of Qiskit
+        pagination. Note that the API has a limit for the number of jobs
+        returned in a single call, and this function might involve making
+        several calls to the API. See also the `skip` parameter for more control
+        over pagination.
+
+        Note that jobs submitted with earlier versions of Qiskit
         (in particular, those that predate the Qobj format) are not included
         in the returned list.
 
         Args:
-            limit (int): number of jobs to retrieve
-            skip (int): starting index of retrieval
+            limit (int): number of jobs to retrieve.
+            skip (int): starting index for the job retrieval.
             status (None or qiskit.providers.JobStatus or str): only get jobs
                 with this status, where status is e.g. `JobStatus.RUNNING` or
                 `'RUNNING'`
@@ -153,6 +201,7 @@ class IBMQBackend(BaseBackend):
         Raises:
             IBMQBackendValueError: status keyword value unrecognized
         """
+        # Build the filter for the query.
         backend_name = self.name()
         api_filter = {'backend.name': backend_name}
         if status:
@@ -177,19 +226,49 @@ class IBMQBackend(BaseBackend):
         if db_filter:
             # status takes precedence over db_filter for same keys
             api_filter = {**db_filter, **api_filter}
-        job_info_list = self._api.get_status_jobs(limit=limit, skip=skip,
-                                                  filter=api_filter)
+
+        # Retrieve the requested number of jobs, using pagination. The API
+        # might limit the number of jobs per request.
+        job_responses = []
+        current_page_limit = limit
+
+        while True:
+            job_page = self._api.get_status_jobs(limit=current_page_limit,
+                                                 skip=skip, filter=api_filter)
+            job_responses += job_page
+            skip = skip + len(job_page)
+
+            if not job_page:
+                # Stop if there are no more jobs returned by the API.
+                break
+
+            if limit:
+                if len(job_responses) >= limit:
+                    # Stop if we have reached the limit.
+                    break
+                current_page_limit = limit - len(job_responses)
+            else:
+                current_page_limit = 0
+
         job_list = []
-        for job_info in job_info_list:
+        for job_info in job_responses:
+            kwargs = {}
             try:
-                ApiJobKind(job_info.get('kind', None))
+                job_kind = ApiJobKind(job_info.get('kind', None))
             except ValueError:
                 # Discard pre-qobj jobs.
                 break
 
+            if isinstance(self._api, BaseClient):
+                # Default to using websockets for new API.
+                kwargs['use_websockets'] = True
+            if job_kind == ApiJobKind.QOBJECT_STORAGE:
+                kwargs['use_object_storage'] = True
+
             job = IBMQJob(self, job_info.get('id'), self._api,
                           creation_date=job_info.get('creationDate'),
-                          api_status=job_info.get('status'))
+                          api_status=job_info.get('status'),
+                          **kwargs)
             job_list.append(job)
 
         return job_list
@@ -226,8 +305,16 @@ class IBMQBackend(BaseBackend):
                                        .format(job_id, self.name()))
 
             # Check for pre-qobj jobs.
+            kwargs = {}
             try:
-                ApiJobKind(job_info.get('kind', None))
+                job_kind = ApiJobKind(job_info.get('kind', None))
+
+                if isinstance(self._api, BaseClient):
+                    # Default to using websockets for new API.
+                    kwargs['use_websockets'] = True
+                if job_kind == ApiJobKind.QOBJECT_STORAGE:
+                    kwargs['use_object_storage'] = True
+
             except ValueError:
                 warnings.warn('The result of job {} is in a no longer supported format. '
                               'Please send the job using Qiskit 0.8+.'.format(job_id),
@@ -240,14 +327,16 @@ class IBMQBackend(BaseBackend):
 
         job = IBMQJob(self, job_info.get('id'), self._api,
                       creation_date=job_info.get('creationDate'),
-                      api_status=job_info.get('status'))
+                      api_status=job_info.get('status'),
+                      **kwargs)
+
         return job
 
     def __repr__(self):
         credentials_info = ''
         if self.hub:
-            credentials_info = '{}, {}, {}'.format(self.hub, self.group,
-                                                   self.project)
+            credentials_info = "hub='{}', group='{}', project='{}'".format(
+                self.hub, self.group, self.project)
         return "<{}('{}') from IBMQ({})>".format(
             self.__class__.__name__, self.name(), credentials_info)
 
@@ -255,7 +344,7 @@ class IBMQBackend(BaseBackend):
 class IBMQSimulator(IBMQBackend):
     """Backend class interfacing with an IBMQ simulator."""
 
-    def properties(self):
+    def properties(self, refresh=False, datetime=None):
         """Return the online backend properties.
 
         Returns:
