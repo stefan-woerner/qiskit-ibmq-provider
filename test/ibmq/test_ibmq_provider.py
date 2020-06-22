@@ -12,34 +12,31 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
+"""Tests for the AccountProvider class."""
 
-"""Tests for all IBMQ backends."""
 from datetime import datetime
+
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
-from qiskit.providers.ibmq import IBMQProvider
 from qiskit.providers.exceptions import QiskitBackendNotFoundError
 from qiskit.providers.ibmq.accountprovider import AccountProvider
-from qiskit.providers.ibmq.ibmqfactory import IBMQFactory
-from qiskit.providers.ibmq.ibmqbackend import IBMQSimulator
+from qiskit.providers.ibmq.ibmqbackend import IBMQSimulator, IBMQBackend
 from qiskit.qobj import QobjHeader
-from qiskit.test import slow_test, providers
+from qiskit.test import providers, slow_test
 from qiskit.compiler import assemble, transpile
 from qiskit.providers.models.backendproperties import BackendProperties
 
-from ..decorators import (requires_qe_access,
-                          requires_classic_api,
-                          requires_new_api_auth)
+from ..decorators import requires_provider, requires_device
 from ..ibmqtestcase import IBMQTestCase
 
 
-class TestIBMQProvider(IBMQTestCase, providers.ProviderTestCase):
-    """Tests for all the IBMQ backends through the classic API."""
+class TestAccountProvider(IBMQTestCase, providers.ProviderTestCase):
+    """Tests for the AccountProvider class."""
 
-    provider_cls = IBMQProvider
+    provider_cls = AccountProvider
     backend_name = 'ibmq_qasm_simulator'
 
     def setUp(self):
-        """Required method for testing"""
+        """Initial test setup."""
         super().setUp()
         qr = QuantumRegister(1)
         cr = ClassicalRegister(1)
@@ -47,13 +44,10 @@ class TestIBMQProvider(IBMQTestCase, providers.ProviderTestCase):
         self.qc1.h(qr[0])
         self.qc1.measure(qr, cr)
 
-    @requires_qe_access
-    @requires_classic_api
-    def _get_provider(self, qe_token, qe_url):
-        """Return an instance of a Provider."""
+    @requires_provider
+    def _get_provider(self, provider):
+        """Return an instance of a provider."""
         # pylint: disable=arguments-differ
-        provider = self.provider_cls()
-        provider.enable_account(qe_token, qe_url)
         return provider
 
     def test_remote_backends_exist_real_device(self):
@@ -67,7 +61,7 @@ class TestIBMQProvider(IBMQTestCase, providers.ProviderTestCase):
         self.assertTrue(remotes)
 
     def test_remote_backends_instantiate_simulators(self):
-        """Test if remote backends that are simulators are an IBMQSimulator instance."""
+        """Test if remote backends that are simulators are an ``IBMQSimulator`` instance."""
         remotes = self.provider.backends(simulator=True)
         for backend in remotes:
             with self.subTest(backend=backend):
@@ -75,7 +69,8 @@ class TestIBMQProvider(IBMQTestCase, providers.ProviderTestCase):
 
     def test_remote_backend_status(self):
         """Test backend_status."""
-        for backend in self.provider.backends():
+        remotes = self.provider.backends()
+        for backend in remotes:
             _ = backend.status()
 
     def test_remote_backend_configuration(self):
@@ -92,16 +87,6 @@ class TestIBMQProvider(IBMQTestCase, providers.ProviderTestCase):
             if backend.configuration().simulator:
                 self.assertEqual(properties, None)
 
-    def test_remote_backend_defaults(self):
-        """Test backend pulse defaults."""
-        remotes = self.provider.backends(simulator=False)
-        for backend in remotes:
-            defaults = backend.defaults()
-            if backend.configuration().open_pulse:
-                self.assertIsNotNone(defaults)
-            else:
-                self.assertIsNone(defaults)
-
     def test_qobj_headers_in_result_sims(self):
         """Test that the qobj headers are passed onto the results for sims."""
         backends = self.provider.backends(simulator=True)
@@ -117,36 +102,34 @@ class TestIBMQProvider(IBMQTestCase, providers.ProviderTestCase):
                 qobj.header = QobjHeader.from_dict(custom_qobj_header)
                 qobj.experiments[0].header.some_field = 'extra info'
 
-                result = backend.run(qobj).result()
+                result = backend.run(qobj, validate_qobj=True).result()
                 self.assertEqual(result.header.to_dict(), custom_qobj_header)
                 self.assertEqual(result.results[0].header.some_field,
                                  'extra info')
 
     @slow_test
-    def test_qobj_headers_in_result_devices(self):
+    @requires_device
+    def test_qobj_headers_in_result_devices(self, backend):
         """Test that the qobj headers are passed onto the results for devices."""
-        backends = self.provider.backends(simulator=False)
-
+        # pylint: disable=unused-argument
         custom_qobj_header = {'x': 1, 'y': [1, 2, 3], 'z': {'a': 4}}
 
-        for backend in backends:
-            with self.subTest(backend=backend):
-                circuits = transpile(self.qc1, backend=backend)
+        qobj = assemble(transpile(self.qc1, backend=backend), backend=backend)
+        # Update the Qobj header.
+        qobj.header = QobjHeader.from_dict(custom_qobj_header)
+        # Update the Qobj.experiment header.
+        qobj.experiments[0].header.some_field = 'extra info'
 
-                qobj = assemble(circuits, backend=backend)
-                # Update the Qobj header.
-                qobj.header = QobjHeader.from_dict(custom_qobj_header)
-                # Update the Qobj.experiment header.
-                qobj.experiments[0].header.some_field = 'extra info'
-
-                result = backend.run(qobj).result()
-                self.assertEqual(result.header.to_dict(), custom_qobj_header)
-                self.assertEqual(result.results[0].header.some_field,
-                                 'extra info')
+        job = backend.run(qobj, validate_qobj=True)
+        job.wait_for_final_state(wait=300, callback=self.simple_job_callback)
+        result = job.result()
+        self.assertEqual(result.header.to_dict(), custom_qobj_header)
+        self.assertEqual(result.results[0].header.some_field,
+                         'extra info')
 
     def test_aliases(self):
         """Test that display names of devices map the regular names."""
-        aliased_names = self.provider._aliased_backend_names()
+        aliased_names = self.provider.backends._aliased_backend_names()
 
         for display_name, backend_name in aliased_names.items():
             with self.subTest(display_name=display_name,
@@ -163,20 +146,6 @@ class TestIBMQProvider(IBMQTestCase, providers.ProviderTestCase):
                     self.assertEqual(
                         backend_by_display_name.name(), backend_name)
 
-
-class TestAccountProvider(TestIBMQProvider):
-    """Tests for all the IBMQ backends through the new API."""
-
-    provider_cls = AccountProvider
-
-    @requires_qe_access
-    @requires_new_api_auth
-    def _get_provider(self, qe_token, qe_url):
-        """Return an instance of a Provider."""
-        # pylint: disable=arguments-differ
-        ibmq = IBMQFactory()
-        return ibmq.enable_account(qe_token, qe_url)
-
     def test_remote_backend_properties_filter_date(self):
         """Test backend properties filtered by date."""
         backends = self.provider.backends(simulator=False)
@@ -190,3 +159,10 @@ class TestAccountProvider(TestIBMQProvider):
                     self.assertLessEqual(last_update_date, datetime_filter)
                 else:
                     self.assertEqual(properties, None)
+
+    def test_provider_backends(self):
+        """Test provider_backends have correct attributes."""
+        provider_backends = {back for back in dir(self.provider.backends)
+                             if isinstance(getattr(self.provider.backends, back), IBMQBackend)}
+        backends = {back.name().lower() for back in self.provider._backends.values()}
+        self.assertEqual(provider_backends, backends)

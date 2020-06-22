@@ -16,12 +16,15 @@ import os
 
 from setuptools import setup
 
-requirements = [
-    "nest-asyncio>=1.0.0",
-    "qiskit-terra>=0.8",
+REQUIREMENTS = [
+    "nest-asyncio>=1.0.0,!=1.1.0",
+    "qiskit-terra>=0.14",
     "requests>=2.19",
     "requests-ntlm>=1.1.0",
-    "websockets>=7,<8"
+    "websockets>=7,<8",
+    "numpy>=1.13",
+    "urllib3>=1.21.1",
+    "python-dateutil>=2.8.0"
 ]
 
 # Handle version.
@@ -56,22 +59,33 @@ setup(
         "Operating System :: Microsoft :: Windows",
         "Operating System :: MacOS",
         "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python :: 3 :: Only",
         "Programming Language :: Python :: 3.5",
         "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
         "Topic :: Scientific/Engineering",
     ],
     keywords="qiskit sdk quantum api ibmq",
     packages=['qiskit.providers.ibmq',
               'qiskit.providers.ibmq.api',
-              'qiskit.providers.ibmq.api_v2',
-              'qiskit.providers.ibmq.api_v2.clients',
-              'qiskit.providers.ibmq.api_v2.rest',
-              'qiskit.providers.ibmq.circuits',
+              'qiskit.providers.ibmq.api.clients',
+              'qiskit.providers.ibmq.api.rest',
+              'qiskit.providers.ibmq.api.rest.utils',
               'qiskit.providers.ibmq.credentials',
               'qiskit.providers.ibmq.job',
-              'qiskit.providers.ibmq.utils'],
-    install_requires=requirements,
+              'qiskit.providers.ibmq.managed',
+              'qiskit.providers.ibmq.utils',
+              'qiskit.providers.ibmq.visualization',
+              'qiskit.providers.ibmq.visualization.interactive',
+              'qiskit.providers.ibmq.jupyter',
+              'qiskit.providers.ibmq.jupyter.dashboard'],
+    install_requires=REQUIREMENTS,
     include_package_data=True,
-    python_requires=">=3.5"
+    python_requires=">=3.5",
+    zip_safe=False,
+    extras_require={'visualization': ['matplotlib>=2.1', 'ipywidgets>=7.3.0',
+                                      "seaborn>=0.9.0", "plotly>=4.4",
+                                      "ipyvuetify>=1.1", "pyperclip>=1.7",
+                                      "ipython>=5.0.0"]},
 )
